@@ -1,0 +1,11 @@
+youtube-transcript-api
+langchain
+langchain-google-genai
+google-generativeai
+langchain-community
+pydantic
+faiss-cpu
+typing-extensions
+python-dotenv
+numpy
+streamlit
