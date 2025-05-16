@@ -73,43 +73,65 @@ def get_clean_transcript(url):
         
         print(f"Fetching transcript for video ID: {video_id}")
         
+        transcript_list = None
+        error_message = None
+        
+        # First try: Direct English transcript
         try:
-            # Try getting English transcript directly
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            
-            # Add missing 'end' field where necessary
-            for entry in transcript_list:
-                if 'end' not in entry:
-                    entry['end'] = entry['start'] + entry.get('duration', 0)
-
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
         except Exception as e:
-            print(f"Trying to find available transcripts: {str(e)}")
+            error_message = str(e)
+            print(f"Could not get direct English transcript: {error_message}")
+        
+        # Second try: List and find available transcripts
+        if not transcript_list:
             try:
-                # List available transcripts
                 transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
                 available_langs = [t.language_code for t in transcripts]
                 print(f"Available languages: {available_langs}")
 
-                # Pick first English variant if available
-                lang_to_use = next((lang for lang in available_langs if 'en' in lang), None)
-
-                if not lang_to_use:
-                    return f"No suitable English transcript found. Available: {available_langs}"
-
-                # Get manually created or translated transcript
-                transcript = transcripts.find_transcript([lang_to_use])
+                # Try English variants first
+                english_variants = [lang for lang in available_langs if 'en' in lang.lower()]
                 
-                # Fetch and ensure 'end' exists
-                transcript_list = transcript.fetch()
-                for entry in transcript_list:
-                    if 'end' not in entry:
-                        entry['end'] = entry['start'] + entry.get('duration', 0)
+                if english_variants:
+                    print(f"Found English variants: {english_variants}")
+                    # Try each English variant
+                    for lang in english_variants:
+                        try:
+                            transcript = transcripts.find_transcript([lang])
+                            transcript_list = transcript.fetch()
+                            print(f"Successfully fetched transcript in {lang}")
+                            break
+                        except Exception as e:
+                            print(f"Failed to fetch {lang} transcript: {str(e)}")
+                            continue
+                
+                # If no English transcript worked, try auto-translate
+                if not transcript_list and available_langs:
+                    try:
+                        print("Attempting to translate transcript to English...")
+                        transcript = transcripts.find_transcript(available_langs)
+                        transcript_list = transcript.translate('en').fetch()
+                    except Exception as e:
+                        print(f"Translation failed: {str(e)}")
 
-            except TranscriptsDisabled:
-                return "Error: Subtitles are disabled for this video."
+            except Exception as e:
+                error_message = str(e)
+                print(f"Error listing transcripts: {error_message}")
+
+        if not transcript_list:
+            return f"Error: Could not fetch transcript. {error_message if error_message else 'No available transcripts.'}"
+
+        # Add missing 'end' field where necessary
+        for entry in transcript_list:
+            if 'end' not in entry:
+                entry['end'] = entry['start'] + entry.get('duration', 0)
 
         # Merge broken-up segments into full sentences
         cleaned_segments = merge_transcript_segments(transcript_list)
+        
+        if not cleaned_segments:
+            return "Error: No transcript segments were generated."
 
         # Save to file
         os.makedirs('transcripts', exist_ok=True)
@@ -131,9 +153,9 @@ def get_clean_transcript(url):
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
-# Example usage
-if __name__ == "__main__":
-    youtube_url = "https://www.youtube.com/watch?v=HNpYAz_I4yY"
+# # Example usage
+# if __name__ == "__main__":
+#     youtube_url = "https://www.youtube.com/watch?v=HNpYAz_I4yY"
     
-    result = get_clean_transcript(youtube_url)
-    print(result)
+#     result = get_clean_transcript(youtube_url)
+#     print(result)
