@@ -1,139 +1,219 @@
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
-from youtube_transcript_api.formatters import TextFormatter
-import re
-from datetime import datetime
 import os
+from typing import List, Optional, Any, Dict
+import warnings
 
-def get_video_id(url):
-    """Extract video ID from YouTube URL"""
-    pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
-    match = re.search(pattern, url)
-    return match.group(1) if match else None
+# Suppress deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*The function.*was deprecated.*")
+warnings.filterwarnings("ignore", category=UserWarning)
+
+from langchain_google_genai import GoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain.chains import ConversationalRetrievalChain
+from langchain.prompts import PromptTemplate
+from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+# Load environment variables
+load_dotenv()
+
+# -------------------------------
+# Configuration
+# -------------------------------
+
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+VECTOR_DB_DIR = "vectorstore"
+TRANSCRIPT_DIR = "transcripts"
+
+# In-memory store for session histories
+store = {}
+
+# -------------------------------
+# Helper Functions
+# -------------------------------
+
+def get_session_history(session_id: str) -> ChatMessageHistory:
+    """Retrieve or create message history for a session"""
+    if session_id not in store:
+        store[session_id] = ChatMessageHistory()
+    return store[session_id]
 
 
-def format_time(seconds):
-    """Convert seconds to HH:MM:SS format"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+def load_transcript_files(directory: str = TRANSCRIPT_DIR) -> List[Document]:
+    """Load all transcript text files into LangChain Documents with metadata"""
+    documents = []
+    if not os.path.exists(directory):
+        raise FileNotFoundError(f"Transcript directory '{directory}' does not exist.")
+
+    for filename in os.listdir(directory):
+        if filename.endswith(".txt"):
+            file_path = os.path.join(directory, filename)
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                documents.append(
+                    Document(page_content=content, metadata={"source": filename})
+                )
+                print(f"Loaded: {filename}")
+            except Exception as e:
+                print(f"Error loading {filename}: {str(e)}")
+    return documents
 
 
-def merge_transcript_segments(transcript_list, max_gap_seconds=1.5):
-    """
-    Merge transcript segments into full sentences.
-    Uses punctuation and small gaps between entries to detect sentence ends.
-    """
-    if not transcript_list:
-        return []
+def create_vector_store(documents: List[Document], persist_dir: str = VECTOR_DB_DIR):
+    """Create or load vector store with Gemini embeddings"""
+    if not documents:
+        raise ValueError("No documents provided to create vector store")
 
-    merged = []
-    current_segment = {
-        "start": transcript_list[0]['start'],
-        "end": transcript_list[0]['end'],
-        "text": transcript_list[0]['text'].strip()
-    }
+    if os.path.exists(persist_dir):
+        print("Loading existing vector store...")
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        vector_store = FAISS.load_local(persist_dir, embeddings, allow_dangerous_deserialization=True)
+        return vector_store
 
-    sentence_end_punct = {'.', '?', '!', '"', "'", ')'}
+    print("Creating new vector store...")
+    text_splitter = RecursiveCharacterTextSplitter(
+        separators=["\n\n", "\n", ". ", "? ", "! "],
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        length_function=len
+    )
     
-    for entry in transcript_list[1:]:
-        prev_text = current_segment['text']
-        current_text = entry['text'].strip()
-
-        # Check if previous segment ends with sentence-ending punctuation
-        ends_with_sentence_end = len(prev_text) > 0 and prev_text[-1] in sentence_end_punct
-        # Or check if there's a gap larger than threshold between entries
-        starts_new = entry['start'] > current_segment['end'] + max_gap_seconds
-
-        if ends_with_sentence_end or starts_new:
-            # Finalize current segment
-            merged.append(current_segment)
-            # Start new segment
-            current_segment = {
-                "start": entry['start'],
-                "end": entry['end'],
-                "text": current_text
-            }
-        else:
-            # Continue building segment
-            current_segment['text'] += " " + current_text
-            current_segment['end'] = entry['end']
-
-    # Add the last one
-    merged.append(current_segment)
-    return merged
-
-
-def get_clean_transcript(url):
-    """Get clean transcript with full sentences and correct timestamps"""
     try:
-        video_id = get_video_id(url)
-        if not video_id:
-            return "Error: Invalid YouTube URL"
-        
-        print(f"Fetching transcript for video ID: {video_id}")
-        
-        try:
-            # Try getting English transcript directly
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        # Split documents into chunks
+        chunks = text_splitter.split_documents(documents)
+        if not chunks:
+            raise ValueError("No text chunks created from documents")
             
-            # Add missing 'end' field where necessary
-            for entry in transcript_list:
-                if 'end' not in entry:
-                    entry['end'] = entry['start'] + entry.get('duration', 0)
+        print(f"Created {len(chunks)} text chunks")
+        
+        # Create embeddings
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        
+        # Create vector store
+        vector_store = FAISS.from_documents(chunks, embeddings)
+        
+        # Save the vector store
+        os.makedirs(persist_dir, exist_ok=True)
+        vector_store.save_local(persist_dir)
+        print(f"Vector store saved to {persist_dir}")
+        
+        return vector_store
+        
+    except Exception as e:
+        print(f"Error creating vector store: {str(e)}")
+        raise
+
+
+def setup_chatbot(vector_store, verbose: bool = False):
+    """Set up conversational chain with custom prompt and message history"""
+
+    llm = GoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.4)
+
+    # Custom Prompt Template
+    prompt_template = """
+        You are a helpful assistant who directly answers questions using only the information from the provided video transcript.  
+        Your answer should be concise, clear, and presented as if you are summarizing the video's content naturally, without mentioning the transcript itself.
+        Do **not** include any timestamps or mention the transcript itself.
+
+        Context:
+        {context}
+
+        Question:
+        {question}
+
+        Answer:
+"""
+    PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+
+    # Conversational Chain without deprecated args
+    chain = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
+        combine_docs_chain_kwargs={"prompt": PROMPT},
+        verbose=verbose
+    )
+
+    # Wrap with message history
+    chain_with_history = RunnableWithMessageHistory(
+        chain,
+        get_session_history,
+        input_messages_key="question",
+        history_messages_key="chat_history"
+    )
+
+    return chain_with_history
+
+
+def display_sources(response):
+    """Display retrieved source chunks"""
+    if "source_documents" in response:
+        print("\nSources:")
+        for i, doc in enumerate(response["source_documents"], 1):
+            source = doc.metadata.get("source", "Unknown")
+            content = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+            print(f"\n{i}. From: {source}")
+            print(f"{content}")
+
+
+# -------------------------------
+# Main Application Loop
+# -------------------------------
+
+def main():
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        print("Error: GOOGLE_API_KEY not found in .env file!")
+        return
+
+    genai.configure(api_key=api_key)
+
+    print("Loading transcripts...")
+    documents = load_transcript_files()
+    if not documents:
+        print(f"No transcript files found in '{TRANSCRIPT_DIR}'")
+        return
+
+    print("Building vector database...")
+    vector_store = create_vector_store(documents)
+
+    print("Setting up chatbot...")
+    chatbot = setup_chatbot(vector_store)
+
+    print("\n🤖 Chatbot ready! Type 'quit' to exit.\n")
+
+    session_id = "abc123"  # You can make this dynamic per user in web apps
+
+    while True:
+        query = input("You: ").strip()
+        if query.lower() in ["quit", "exit", "q"]:
+            print("Goodbye!")
+            break
+        if not query:
+            continue
+
+        try:
+            result = chatbot.invoke(
+                {"question": query},
+                config={"configurable": {"session_id": session_id}}
+            )
+            answer = result.get("answer", "No answer generated.")
+            print(f"\nBot: {answer}")
+
+            # Uncomment to show sources
+            # display_sources(result)
 
         except Exception as e:
-            print(f"Trying to find available transcripts: {str(e)}")
-            try:
-                # List available transcripts
-                transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-                available_langs = [t.language_code for t in transcripts]
-                print(f"Available languages: {available_langs}")
+            print(f"\n⚠️ Error processing request: {str(e)}")
 
-                # Pick first English variant if available
-                lang_to_use = next((lang for lang in available_langs if 'en' in lang), None)
 
-                if not lang_to_use:
-                    return f"No suitable English transcript found. Available: {available_langs}"
-
-                # Get manually created or translated transcript
-                transcript = transcripts.find_transcript([lang_to_use])
-                
-                # Fetch and ensure 'end' exists
-                transcript_list = transcript.fetch()
-                for entry in transcript_list:
-                    if 'end' not in entry:
-                        entry['end'] = entry['start'] + entry.get('duration', 0)
-
-            except TranscriptsDisabled:
-                return "Error: Subtitles are disabled for this video."
-
-        # Merge broken-up segments into full sentences
-        cleaned_segments = merge_transcript_segments(transcript_list)
-
-        # Save to file
-        os.makedirs('transcripts', exist_ok=True)
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"transcripts/transcript_{video_id}_{current_time}.txt"
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            for seg in cleaned_segments:
-                start = format_time(seg['start'])
-                end = format_time(seg['end'])
-                text = seg['text'].strip()
-                
-                line = f"[{start} - {end}] {text}\n"
-                print(line.strip())
-                f.write(line)
-
-        return f"\n✅ Transcript saved to '{filename}' successfully."
-
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
-
-# Example usage
-if __name__ == "__main__":
-    youtube_url = "https://www.youtube.com/watch?v=HNpYAz_I4yY"
+# if __name__ == "__main__":
+#     main()
     
-    result = get_clean_transcript(youtube_url)
-    print(result)
+    
