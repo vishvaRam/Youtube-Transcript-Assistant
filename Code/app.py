@@ -74,27 +74,58 @@ with st.sidebar:
     st.title("🎥 YouTube Video Chat")
     st.write("Enter a YouTube video URL to start chatting about its content!")
     
-    video_url = st.text_input("YouTube URL", key="video_url")
+    # Updated URL input with placeholder and help text
+    video_url = st.text_area(
+        "YouTube URL",
+        placeholder="Paste your YouTube URL here...",
+        help="Example: https://www.youtube.com/watch?v=...",
+        height=100,
+        key="video_url"
+    )
     
-    if st.button("Process Video"):
+    # URL validation feedback
+    if video_url:
+        if "youtube.com" in video_url or "youtu.be" in video_url:
+            st.success("Valid YouTube URL format!")
+        else:
+            st.error("Please enter a valid YouTube URL")
+    
+    if st.button("Process Video", type="primary"):
         if video_url:
             video_id = get_video_id(video_url)
             if video_id:
-                with st.spinner("Processing transcript..."):
-                    result = get_clean_transcript(video_url)
-                    if result.startswith("Error"):
-                        st.error(result)
-                    else:
-                        st.success("Transcript processed successfully!")
-                        # Initialize chatbot with new transcript
-                        documents = load_transcript_files()
-                        vector_store = create_vector_store(documents)
-                        st.session_state.chatbot = setup_chatbot(vector_store)
-                        st.session_state.video_id = video_id
-                        # Embed video
-                        st.video(video_url)
+                try:
+                    with st.spinner("Processing transcript..."):
+                        result = get_clean_transcript(video_url)
+                        if result.startswith("Error"):
+                            st.error(result)
+                        else:
+                            st.success("Transcript processed successfully!")
+                            
+                            # Initialize chatbot with new transcript
+                            try:
+                                documents = load_transcript_files()
+                                if documents:
+                                    with st.spinner("Creating chat interface..."):
+                                        vector_store = create_vector_store(documents)
+                                        st.session_state.chatbot = setup_chatbot(vector_store)
+                                        st.session_state.video_id = video_id
+                                        
+                                        # Embed video
+                                        st.video(video_url)
+                                        st.success("Chat interface ready! You can now ask questions about the video.")
+                                else:
+                                    st.error("No transcript files found. Please try processing the video again.")
+                                    
+                            except Exception as e:
+                                st.error(f"Error setting up chat interface: {str(e)}")
+                                st.info("Please try processing the video again. If the error persists, try a different video.")
+                except Exception as e:
+                    st.error(f"Error processing video: {str(e)}")
             else:
-                st.error("Invalid YouTube URL")
+                st.error("Invalid YouTube URL. Please make sure you've copied the entire URL.")
+        else:
+            st.warning("Please enter a YouTube URL first.")
     
     st.divider()
     st.markdown("""
@@ -108,41 +139,32 @@ with st.sidebar:
 # Main chat interface
 st.title("💬 Chat with Your Video")
 
-# Display chat messages
+# Display chat messages using Streamlit's native chat elements
 for message in st.session_state.chat_history:
-    with st.container():
-        st.markdown(f"""
-        <div class="chat-message {message['role']}">
-            <div class="message-content">
-                <div class="avatar">{'🧑' if message['role'] == 'user' else '🤖'}</div>
-                <div class="message">
-                    {message['content']}
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
 
-# Chat input
+# Chat input using Streamlit's native chat input
 if st.session_state.chatbot:
-    user_input = st.text_input("Ask about the video:", key="user_input")
-    
-    if user_input:
+    if prompt := st.chat_input("Ask about the video..."):
+        # Display user message
+        with st.chat_message("user"):
+            st.write(prompt)
+        
         # Add user message to chat history
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
         
-        # Get bot response
-        with st.spinner("Thinking..."):
-            result = st.session_state.chatbot.invoke(
-                {"question": user_input},
-                config={"configurable": {"session_id": st.session_state.video_id}}
-            )
-            answer = result.get("answer", "I couldn't generate an answer. Please try rephrasing your question.")
+        # Display assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                result = st.session_state.chatbot.invoke(
+                    {"question": prompt},
+                    config={"configurable": {"session_id": st.session_state.video_id}}
+                )
+                answer = result.get("answer", "I couldn't generate an answer. Please try rephrasing your question.")
+                st.write(answer)
         
-        # Add bot response to chat history
+        # Add assistant response to chat history
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
-        
-        # Rerun to update chat display
-        st.rerun()
 else:
     st.info("👈 Please process a YouTube video first to start chatting!") 
-
