@@ -1,121 +1,139 @@
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+from youtube_transcript_api.formatters import TextFormatter
+import re
+from datetime import datetime
 import os
-from typing import List
-import warnings
-# Suppress deprecation warnings
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', message='.*The function.*was deprecated.*')
 
-from langchain_google_genai import GoogleGenerativeAI
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-import google.generativeai as genai
-from dotenv import load_dotenv
-from langchain_core._api.deprecation import LangChainDeprecationWarning
+def get_video_id(url):
+    """Extract video ID from YouTube URL"""
+    pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
+    match = re.search(pattern, url)
+    return match.group(1) if match else None
 
-warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 
-# Load environment variables
-load_dotenv()
+def format_time(seconds):
+    """Convert seconds to HH:MM:SS format"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-def load_transcript_files(directory: str = "transcripts") -> List[str]:
-    """Load all transcript files from the specified directory"""
-    documents = []
-    for filename in os.listdir(directory):
-        if filename.endswith(".txt"):
-            with open(os.path.join(directory, filename), 'r', encoding='utf-8') as f:
-                documents.append(f.read())
-    return documents
 
-def create_vector_store(documents: List[str]):
-    """Create a FAISS vector store from the documents"""
-    # Split documents into chunks
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
-        length_function=len
-    )
-    chunks = text_splitter.create_documents(documents)
-    
-    # Create vector store using Vertex AI embeddings
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = FAISS.from_documents(chunks, embeddings)
-    return vector_store
+def merge_transcript_segments(transcript_list, max_gap_seconds=1.5):
+    """
+    Merge transcript segments into full sentences.
+    Uses punctuation and small gaps between entries to detect sentence ends.
+    """
+    if not transcript_list:
+        return []
 
-def setup_chatbot(vector_store):
-    """Set up the conversational chain"""
-    # Initialize Gemini model
-    llm = GoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7)
-    
-    # Set up memory
-    memory = ConversationBufferMemory(
-        memory_key="chat_history",
-        return_messages=True,
-        output_key="answer"
-    )
-    
-    # Create chain
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
-        memory=memory,
-        return_source_documents=True,
-        combine_docs_chain_kwargs={"prompt": None},
-        verbose=True
-    )
-    
-    return chain
+    merged = []
+    current_segment = {
+        "start": transcript_list[0]['start'],
+        "end": transcript_list[0]['end'],
+        "text": transcript_list[0]['text'].strip()
+    }
 
-def main():
-    # Get API key from environment variable
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        print("Error: GOOGLE_API_KEY not found in .env file!")
-        return
+    sentence_end_punct = {'.', '?', '!', '"', "'", ')'}
     
-    # Configure Gemini
-    os.environ["GOOGLE_API_KEY"] = api_key
-    genai.configure(api_key=api_key)
-    
-    # Load documents
-    print("Loading transcript files...")
-    documents = load_transcript_files()
-    if not documents:
-        print("No transcript files found in the 'transcripts' directory!")
-        return
-    
-    # Create vector store
-    print("Creating vector store...")
-    vector_store = create_vector_store(documents)
-    
-    # Set up chatbot
-    print("Setting up chatbot...")
-    chat_chain = setup_chatbot(vector_store)
-    
-    # Simple command-line interface
-    print("\nChatbot ready! Type 'quit' to exit.")
-    while True:
-        question = input("\nYou: ")
-        if question.lower() == 'quit':
-            break
-            
+    for entry in transcript_list[1:]:
+        prev_text = current_segment['text']
+        current_text = entry['text'].strip()
+
+        # Check if previous segment ends with sentence-ending punctuation
+        ends_with_sentence_end = len(prev_text) > 0 and prev_text[-1] in sentence_end_punct
+        # Or check if there's a gap larger than threshold between entries
+        starts_new = entry['start'] > current_segment['end'] + max_gap_seconds
+
+        if ends_with_sentence_end or starts_new:
+            # Finalize current segment
+            merged.append(current_segment)
+            # Start new segment
+            current_segment = {
+                "start": entry['start'],
+                "end": entry['end'],
+                "text": current_text
+            }
+        else:
+            # Continue building segment
+            current_segment['text'] += " " + current_text
+            current_segment['end'] = entry['end']
+
+    # Add the last one
+    merged.append(current_segment)
+    return merged
+
+
+def get_clean_transcript(url):
+    """Get clean transcript with full sentences and correct timestamps"""
+    try:
+        video_id = get_video_id(url)
+        if not video_id:
+            return "Error: Invalid YouTube URL"
+        
+        print(f"Fetching transcript for video ID: {video_id}")
+        
         try:
-            response = chat_chain({"question": question})
-            print("\nBot:", response["answer"])
+            # Try getting English transcript directly
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
             
-            # Uncomment to see sources
-            # if "source_documents" in response:
-            #     print("\nSources:")
-            #     for idx, doc in enumerate(response["source_documents"], 1):
-            #         print(f"\nSource {idx}:")
-            #         print(doc.page_content[:200] + "...")
-            
-        except Exception as e:
-            print(f"\nError: An error occurred while processing your question.")
-            print(f"Error details: {str(e)}")
-            print("Please try asking your question in a different way or try another question.")
+            # Add missing 'end' field where necessary
+            for entry in transcript_list:
+                if 'end' not in entry:
+                    entry['end'] = entry['start'] + entry.get('duration', 0)
 
+        except Exception as e:
+            print(f"Trying to find available transcripts: {str(e)}")
+            try:
+                # List available transcripts
+                transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+                available_langs = [t.language_code for t in transcripts]
+                print(f"Available languages: {available_langs}")
+
+                # Pick first English variant if available
+                lang_to_use = next((lang for lang in available_langs if 'en' in lang), None)
+
+                if not lang_to_use:
+                    return f"No suitable English transcript found. Available: {available_langs}"
+
+                # Get manually created or translated transcript
+                transcript = transcripts.find_transcript([lang_to_use])
+                
+                # Fetch and ensure 'end' exists
+                transcript_list = transcript.fetch()
+                for entry in transcript_list:
+                    if 'end' not in entry:
+                        entry['end'] = entry['start'] + entry.get('duration', 0)
+
+            except TranscriptsDisabled:
+                return "Error: Subtitles are disabled for this video."
+
+        # Merge broken-up segments into full sentences
+        cleaned_segments = merge_transcript_segments(transcript_list)
+
+        # Save to file
+        os.makedirs('transcripts', exist_ok=True)
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"transcripts/transcript_{video_id}_{current_time}.txt"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            for seg in cleaned_segments:
+                start = format_time(seg['start'])
+                end = format_time(seg['end'])
+                text = seg['text'].strip()
+                
+                line = f"[{start} - {end}] {text}\n"
+                print(line.strip())
+                f.write(line)
+
+        return f"\n✅ Transcript saved to '{filename}' successfully."
+
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+# Example usage
 if __name__ == "__main__":
-    main() 
+    youtube_url = "https://www.youtube.com/watch?v=HNpYAz_I4yY"
+    
+    result = get_clean_transcript(youtube_url)
+    print(result)
