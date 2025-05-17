@@ -114,28 +114,40 @@ def create_vector_store(documents: List[Document], persist_dir: str = VECTOR_DB_
 def setup_chatbot(vector_store, verbose: bool = False):
     """Set up conversational chain with custom prompt and message history"""
 
-    llm = GoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.4)
+    llm = GoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.6)
 
     # Custom Prompt Template
-    prompt_template = """
-        You are a helpful assistant who directly answers questions using only the information from the provided video transcript.  
-        Your answer should be concise, clear, and presented as if you are summarizing the video's content naturally, without mentioning the transcript itself.
-        Do **not** include any timestamps or mention the transcript itself.
+    prompt_template = """You are an expert AI assistant specialized in analyzing and discussing YouTube video content.
 
-        Context:
-        {context}
+    Role and Behavior:
+    - Provide direct, accurate answers based solely on the video transcript
+    - Be concise yet informative in your responses
+    - Maintain a conversational and engaging tone
+    - Focus on the main points and key details from the video
+    - If asked about something not in the transcript, politely indicate that information isn't covered in the video
 
-        Question:
-        {question}
+    Guidelines:
+    - Never mention that you're using a transcript
+    - Don't reference timestamps or transcript sections
+    - Don't make assumptions beyond the provided content
+    - If multiple interpretations are possible, present the most relevant one
+    - Keep responses focused and to the point
 
-        Answer:
+    Context from Video:
+    {context}
+
+    User Question:
+    {question}
+
+    Response (following the above guidelines):
 """
+
     PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
 
     # Conversational Chain without deprecated args
     chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
+        retriever=vector_store.as_retriever(search_kwargs={"k": 6}),
         combine_docs_chain_kwargs={"prompt": PROMPT},
         verbose=verbose
     )

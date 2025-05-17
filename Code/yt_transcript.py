@@ -76,51 +76,65 @@ def get_clean_transcript(url):
         transcript_list = None
         error_message = None
         
-        # First try: Direct English transcript
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-        except Exception as e:
-            error_message = str(e)
-            print(f"Could not get direct English transcript: {error_message}")
-        
-        # Second try: List and find available transcripts
-        if not transcript_list:
+            # Get transcript list object first
+            transcript_obj = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            # Get all available transcripts first
+            available_transcripts = transcript_obj._manually_created_transcripts
+            available_transcripts.update(transcript_obj._generated_transcripts)
+            
+            if not available_transcripts:
+                return "Error: No transcripts available for this video"
+            
+            print(f"Available languages: {list(available_transcripts.keys())}")
+            
+            # Try direct transcript fetch first
             try:
-                transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-                available_langs = [t.language_code for t in transcripts]
-                print(f"Available languages: {available_langs}")
-
-                # Try English variants first
-                english_variants = [lang for lang in available_langs if 'en' in lang.lower()]
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                print("✅ Successfully fetched English transcript directly")
+            except Exception as e:
+                print(f"Direct transcript fetch failed: {str(e)}")
+                
+                # Try to get any English variant
+                english_variants = [lang for lang in available_transcripts.keys() 
+                                 if lang.startswith('en')]
                 
                 if english_variants:
                     print(f"Found English variants: {english_variants}")
-                    # Try each English variant
                     for lang in english_variants:
                         try:
-                            transcript = transcripts.find_transcript([lang])
-                            transcript_list = transcript.fetch()
-                            print(f"Successfully fetched transcript in {lang}")
-                            break
+                            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
+                            if transcript_list:
+                                print(f"✅ Successfully fetched {lang} transcript")
+                                break
                         except Exception as e:
                             print(f"Failed to fetch {lang} transcript: {str(e)}")
                             continue
                 
-                # If no English transcript worked, try auto-translate
-                if not transcript_list and available_langs:
-                    try:
-                        print("Attempting to translate transcript to English...")
-                        transcript = transcripts.find_transcript(available_langs)
-                        transcript_list = transcript.translate('en').fetch()
-                    except Exception as e:
-                        print(f"Translation failed: {str(e)}")
-
-            except Exception as e:
-                error_message = str(e)
-                print(f"Error listing transcripts: {error_message}")
+                # If still no transcript, try non-English transcripts
+                if not transcript_list:
+                    for lang in available_transcripts.keys():
+                        if not lang.startswith('en'):
+                            try:
+                                transcript = transcript_obj.find_transcript([lang])
+                                translated = transcript.translate('en')
+                                transcript_list = translated.fetch()
+                                print(f"✅ Successfully translated {lang} transcript to English")
+                                break
+                            except Exception as e:
+                                print(f"Failed to translate {lang} transcript: {str(e)}")
+                                continue
+            
+        except TranscriptsDisabled:
+            return "Error: Transcripts are disabled for this video"
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error accessing transcripts: {error_message}")
+            return f"Error: Could not access video transcripts. {error_message}"
 
         if not transcript_list:
-            return f"Error: Could not fetch transcript. {error_message if error_message else 'No available transcripts.'}"
+            return "Error: Could not fetch any transcript for this video. Please check if the video has captions enabled."
 
         # Add missing 'end' field where necessary
         for entry in transcript_list:
@@ -131,7 +145,7 @@ def get_clean_transcript(url):
         cleaned_segments = merge_transcript_segments(transcript_list)
         
         if not cleaned_segments:
-            return "Error: No transcript segments were generated."
+            return "Error: No transcript segments were generated"
 
         # Save to file
         os.makedirs('transcripts', exist_ok=True)
@@ -140,18 +154,15 @@ def get_clean_transcript(url):
 
         with open(filename, 'w', encoding='utf-8') as f:
             for seg in cleaned_segments:
-                start = format_time(seg['start'])
-                end = format_time(seg['end'])
                 text = seg['text'].strip()
-                
-                line = f"[{start} - {end}] {text}\n"
-                print(line.strip())
+                line = f"{text}\n"
+                # print(line.strip())
                 f.write(line)
 
-        return f"\n✅ Transcript saved to '{filename}' successfully."
+        return f"✅ Transcript saved to '{filename}' successfully"
 
     except Exception as e:
-        return f"❌ Error: {str(e)}"
+        return f"Error: {str(e)}"
 
 # # Example usage
 # if __name__ == "__main__":

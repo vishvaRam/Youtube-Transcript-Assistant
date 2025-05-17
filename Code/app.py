@@ -16,6 +16,9 @@ load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
+else:
+    st.error("Please set up your GOOGLE_API_KEY in the .env file")
+    st.stop()
 
 # Initialize session state
 if "chat_history" not in st.session_state:
@@ -24,20 +27,38 @@ if "video_id" not in st.session_state:
     st.session_state.video_id = None
 if "chatbot" not in st.session_state:
     st.session_state.chatbot = None
+if "stored_video_url" not in st.session_state:
+    st.session_state.stored_video_url = None
+
+def check_transcript_exists(video_id):
+    """Check if transcript exists for the given video ID"""
+    if not video_id or not os.path.exists(TRANSCRIPT_DIR):
+        return False
+    transcript_files = os.listdir(TRANSCRIPT_DIR)
+    return any(file.startswith(f"transcript_{video_id}_") for file in transcript_files)
 
 # Page config
 st.set_page_config(
     page_title="YouTube Video Chat",
     page_icon="🎥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # Custom CSS
 st.markdown("""
 <style>
+    /* Main container styling */
+    .main {
+        padding: 0;
+    }
+    
+    /* Input field styling */
     .stTextInput>div>div>input {
         background-color: #f0f2f6;
     }
+    
+    /* Chat message styling */
     .chat-message {
         padding: 1rem;
         border-radius: 0.5rem;
@@ -45,16 +66,22 @@ st.markdown("""
         display: flex;
         flex-direction: column;
     }
+    
     .chat-message.user {
         background-color: #e3f2fd;
     }
+    
     .chat-message.assistant {
         background-color: #f5f5f5;
     }
+    
+    /* Message content styling */
     .chat-message .message-content {
         display: flex;
         margin-top: 0.5rem;
     }
+    
+    /* Avatar styling */
     .chat-message .avatar {
         width: 40px;
         height: 40px;
@@ -65,6 +92,37 @@ st.markdown("""
         background-color: #fff;
         border-radius: 50%;
         font-size: 20px;
+    }
+    
+
+    /* Chat container styling */
+    .stChatMessage {
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border-radius: 10px;
+    }
+    
+    /* Chat input styling */
+    .stChatInputContainer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 1rem 2rem;
+        background: white;
+        border-top: 1px solid #ddd;
+        z-index: 1000;
+        backdrop-filter: blur(10px);
+    }
+    
+    /* Add padding at bottom for chat input */
+    .main {
+        padding-bottom: 80px;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg {
+        padding: 2rem 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -80,54 +138,83 @@ with st.sidebar:
         placeholder="Paste your YouTube URL here...",
         help="Example: https://www.youtube.com/watch?v=...",
         height=100,
-        key="video_url"
+        key="video_url_input"
     )
     
     # URL validation feedback
     if video_url:
         if "youtube.com" in video_url or "youtu.be" in video_url:
-            st.success("Valid YouTube URL format!")
+            st.toast("✅ Valid YouTube URL format!")
         else:
-            st.error("Please enter a valid YouTube URL")
+            st.toast("❌ Please enter a valid YouTube URL")
     
-    if st.button("Process Video", type="primary"):
+    if st.button("Process Video", type="secondary"):
         if video_url:
             video_id = get_video_id(video_url)
             if video_id:
                 try:
-                    with st.spinner("Processing transcript..."):
-                        result = get_clean_transcript(video_url)
-                        if result.startswith("Error"):
-                            st.error(result)
-                        else:
-                            st.success("Transcript processed successfully!")
-                            
-                            # Initialize chatbot with new transcript
-                            try:
-                                documents = load_transcript_files()
-                                if documents:
-                                    with st.spinner("Creating chat interface..."):
-                                        vector_store = create_vector_store(documents)
-                                        st.session_state.chatbot = setup_chatbot(vector_store)
-                                        st.session_state.video_id = video_id
-                                        
-                                        # Embed video
-                                        st.video(video_url)
-                                        st.success("Chat interface ready! You can now ask questions about the video.")
-                                else:
-                                    st.error("No transcript files found. Please try processing the video again.")
+                    # Check if transcript already exists
+                    if check_transcript_exists(video_id):
+                        st.toast("ℹ️ Transcript already exists! Loading chat interface...")
+                        try:
+                            documents = load_transcript_files()
+                            if documents:
+                                with st.spinner("Creating chat interface..."):
+                                    vector_store = create_vector_store(documents)
+                                    st.session_state.chatbot = setup_chatbot(vector_store)
+                                    st.session_state.video_id = video_id
+                                    st.session_state.stored_video_url = video_url
+                                    st.toast("✅ Chat interface ready!")
                                     
-                            except Exception as e:
-                                st.error(f"Error setting up chat interface: {str(e)}")
-                                st.info("Please try processing the video again. If the error persists, try a different video.")
+                                    # Display video if it exists
+                                    if st.session_state.stored_video_url:
+                                        st.video(st.session_state.stored_video_url,)
+                                    
+                                    else:
+                                        st.toast("❌ No transcript files found. Please try processing the video again.")
+                        except Exception as e:
+                            st.toast(f"❌ Error setting up chat interface: {str(e)}")
+                    else:
+                        with st.spinner("Processing transcript..."):
+                            result = get_clean_transcript(video_url)
+                            if result.startswith("Error"):
+                                st.toast(result + " ❌")
+                            else:
+                                st.toast("✅ Transcript processed successfully!")
+                                
+                                # Initialize chatbot with new transcript
+                                try:
+                                    documents = load_transcript_files()
+                                    if documents:
+                                        with st.spinner("Creating chat interface..."):
+                                            vector_store = create_vector_store(documents)
+                                            st.session_state.chatbot = setup_chatbot(vector_store)
+                                            st.session_state.video_id = video_id
+                                            st.session_state.stored_video_url = video_url
+                                            st.toast("✅ Chat interface ready!")
+                                    
+                                    # Display video if it exists
+                                    if st.session_state.stored_video_url:
+                                        st.video(st.session_state.stored_video_url)
+                                    
+                                    else:
+                                        st.toast("❌ No transcript files found. Please try processing the video again.")
+                                except Exception as e:
+                                    st.toast(f"❌ Error setting up chat interface: {str(e)}")
                 except Exception as e:
-                    st.error(f"Error processing video: {str(e)}")
+                    st.toast(f"❌ Error processing video: {str(e)}")
             else:
-                st.error("Invalid YouTube URL. Please make sure you've copied the entire URL.")
+                st.toast("❌ Invalid YouTube URL. Please make sure you've copied the entire URL.")
         else:
-            st.warning("Please enter a YouTube URL first.")
+            st.toast("⚠️ Please enter a YouTube URL first.")
     
     st.divider()
+    
+    # Clear chat button
+    if st.button("Clear Chat History", type="secondary", use_container_width=True):
+        st.session_state.chat_history = []
+        st.toast("🧹 Chat history cleared!")
+    
     st.markdown("""
     ### How to use:
     1. Paste a YouTube video URL
@@ -140,13 +227,15 @@ with st.sidebar:
 st.title("💬 Chat with Your Video")
 
 # Display chat messages using Streamlit's native chat elements
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+chat_container = st.container()
+with chat_container:
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
 
 # Chat input using Streamlit's native chat input
 if st.session_state.chatbot:
-    if prompt := st.chat_input("Ask about the video..."):
+    if prompt := st.chat_input("Ask about the video...", key="chat_input"):
         # Display user message
         with st.chat_message("user"):
             st.write(prompt)
@@ -163,8 +252,6 @@ if st.session_state.chatbot:
                 )
                 answer = result.get("answer", "I couldn't generate an answer. Please try rephrasing your question.")
                 st.write(answer)
-        
-        # Add assistant response to chat history
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
 else:
     st.info("👈 Please process a YouTube video first to start chatting!") 
