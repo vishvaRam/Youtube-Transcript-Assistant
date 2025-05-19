@@ -53,6 +53,12 @@ st.markdown("""
         padding: 0;
     }
     
+    /* Sidebar width control */
+    [data-testid="stSidebar"] {
+        min-width: 40% !important;
+        max-width: 40% !important;
+    }
+    
     /* Input field styling */
     .stTextInput>div>div>input {
         background-color: #f0f2f6;
@@ -165,13 +171,8 @@ with st.sidebar:
                                     st.session_state.video_id = video_id
                                     st.session_state.stored_video_url = video_url
                                     st.toast("✅ Chat interface ready!")
-                                    
-                                    # Display video if it exists
-                                    if st.session_state.stored_video_url:
-                                        st.video(st.session_state.stored_video_url,)
-                                    
-                                    else:
-                                        st.toast("❌ No transcript files found. Please try processing the video again.")
+                            else:
+                                st.toast("❌ No transcript files found. Please try processing the video again.")
                         except Exception as e:
                             st.toast(f"❌ Error setting up chat interface: {str(e)}")
                     else:
@@ -192,11 +193,6 @@ with st.sidebar:
                                             st.session_state.video_id = video_id
                                             st.session_state.stored_video_url = video_url
                                             st.toast("✅ Chat interface ready!")
-                                    
-                                    # Display video if it exists
-                                    if st.session_state.stored_video_url:
-                                        st.video(st.session_state.stored_video_url)
-                                    
                                     else:
                                         st.toast("❌ No transcript files found. Please try processing the video again.")
                                 except Exception as e:
@@ -208,10 +204,16 @@ with st.sidebar:
         else:
             st.toast("⚠️ Please enter a YouTube URL first.")
     
+    # Always display the video if URL exists in session state
+    if st.session_state.stored_video_url:
+        st.divider()
+        st.subheader("Current Video")
+        st.video(st.session_state.stored_video_url)
+    
     st.divider()
     
     # Clear chat button
-    if st.button("Clear Chat History", type="secondary", use_container_width=True):
+    if st.button("🧹 Clear Chat History", type="secondary", use_container_width=False):
         st.session_state.chat_history = []
         st.toast("🧹 Chat history cleared!")
     
@@ -254,4 +256,4 @@ if st.session_state.chatbot:
                 st.write(answer)
                 st.session_state.chat_history.append({"role": "assistant", "content": answer})
 else:
-    st.info("👈 Please process a YouTube video first to start chatting!") 
+    st.info("👈 Please process a YouTube video first to start chatting!")
