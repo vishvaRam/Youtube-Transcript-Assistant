@@ -233,7 +233,7 @@ chat_container = st.container()
 with chat_container:
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
-            st.write(message["content"])
+            st.markdown(message["content"])
 
 # Chat input using Streamlit's native chat input
 if st.session_state.chatbot:
@@ -253,7 +253,7 @@ if st.session_state.chatbot:
                     config={"configurable": {"session_id": st.session_state.video_id}}
                 )
                 answer = result.get("answer", "I couldn't generate an answer. Please try rephrasing your question.")
-                st.write(answer)
+                st.markdown(answer)
                 st.session_state.chat_history.append({"role": "assistant", "content": answer})
 else:
     st.info("👈 Please process a YouTube video first to start chatting!")

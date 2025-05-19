@@ -1,0 +1,8 @@
+.devcontainer/
+__pycache__/
+Code/__pycache__/
+*.pyc
+.DS_Store
+.env
+Code/.env
+Code/vectorstore/
