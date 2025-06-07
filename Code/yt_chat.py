@@ -16,11 +16,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
-from dotenv import load_dotenv
 import google.generativeai as genai
-
-# Load environment variables
-load_dotenv()
 
 # -------------------------------
 # Configuration
@@ -66,15 +62,19 @@ def load_transcript_files(directory: str = TRANSCRIPT_DIR) -> List[Document]:
     return documents
 
 
-def create_vector_store(documents: List[Document], persist_dir: str = VECTOR_DB_DIR):
+def create_vector_store(documents: List[Document], api_key: str, persist_dir: str = VECTOR_DB_DIR):
     """Create or load vector store with Gemini embeddings"""
     if not documents:
         raise ValueError("No documents provided to create vector store")
 
+    # If the vector store already exists, load it
     if os.path.exists(persist_dir):
         print("Loading existing vector store...")
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+        # It's important to be cautious with allow_dangerous_deserialization=True
+        # Ensure you trust the source of your persisted vector store.
         vector_store = FAISS.load_local(persist_dir, embeddings, allow_dangerous_deserialization=True)
+        print("Done")
         return vector_store
 
     print("Creating new vector store...")
@@ -94,7 +94,7 @@ def create_vector_store(documents: List[Document], persist_dir: str = VECTOR_DB_
         print(f"Created {len(chunks)} text chunks")
         
         # Create embeddings
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
         
         # Create vector store
         vector_store = FAISS.from_documents(chunks, embeddings)
@@ -111,10 +111,10 @@ def create_vector_store(documents: List[Document], persist_dir: str = VECTOR_DB_
         raise
 
 
-def setup_chatbot(vector_store, verbose: bool = False):
+def setup_chatbot(vector_store, api_key: str, verbose: bool = False):
     """Set up conversational chain with custom prompt and message history"""
-
-    llm = GoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.6)
+ 
+    llm = GoogleGenerativeAI(model="gemini-2.0-flash-lite", temperature=0.6, google_api_key=api_key)
 
     # Custom Prompt Template with Markdown Formatting Instructions
     prompt_template = """
@@ -151,7 +151,7 @@ def setup_chatbot(vector_store, verbose: bool = False):
         {question}
 
         Response (following all guidelines above with Markdown formatting):
-    """ 
+    """
 
     PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
 
@@ -190,11 +190,12 @@ def display_sources(response):
 # -------------------------------
 
 def main():
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = input("Enter your Gemini API key: ").strip()
     if not api_key:
-        print("Error: GOOGLE_API_KEY not found in .env file!")
+        print("Error: GOOGLE_API_KEY not provided!")
         return
 
+    # Configure the Google Generative AI library with the provided API key
     genai.configure(api_key=api_key)
 
     print("Loading transcripts...")
@@ -204,10 +205,10 @@ def main():
         return
 
     print("Building vector database...")
-    vector_store = create_vector_store(documents)
+    vector_store = create_vector_store(documents, api_key)
 
     print("Setting up chatbot...")
-    chatbot = setup_chatbot(vector_store)
+    chatbot = setup_chatbot(vector_store, api_key)
 
     print("\n🤖 Chatbot ready! Type 'quit' to exit.\n")
 
@@ -229,14 +230,12 @@ def main():
             answer = result.get("answer", "No answer generated.")
             print(f"\nBot: {answer}")
 
-            # Uncomment to show sources
+            # Uncomment to show sources if needed for debugging/inspection
             # display_sources(result)
 
         except Exception as e:
             print(f"\n⚠️ Error processing request: {str(e)}")
 
 
-# if __name__ == "__main__":
-#     main()
-    
-    
+if __name__ == "__main__":
+    main()
